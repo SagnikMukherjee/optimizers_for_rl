@@ -66,10 +66,19 @@ def default_compute_score(
         "numina_synthetic_amc",
         "numina_cn_k12",
         "numina_olympiads",
+        "numina_orca_math",
+        "numina_math",
+        "numina_gsm8k"
     ]:
-        from . import prime_math
+        from . import math_reward
 
-        res = prime_math.compute_score(solution_str, ground_truth)
+        res = math_reward.compute_score(solution_str, ground_truth)
+
+        # from . import math_verify
+        # res = math_verify.compute_score(solution_str, ground_truth)
+        # from . import prime_math
+
+        # res = prime_math.compute_score(solution_str, ground_truth)
     elif data_source in ["codecontests", "apps", "codeforces", "taco"]:
         # Use the passed sandbox_fusion_url if available
         if sandbox_fusion_url:

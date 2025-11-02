@@ -520,12 +520,19 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         if role == "actor" and optim_config is not None:
             from verl.utils.torch_functional import get_constant_schedule_with_warmup, get_cosine_schedule_with_warmup
 
-            actor_optimizer = optim.AdamW(
+            # actor_optimizer = optim.AdamW(
+            #     actor_module_fsdp.parameters(),
+            #     lr=optim_config.lr,
+            #     betas=optim_config.get("betas", (0.9, 0.999)),
+            #     weight_decay=optim_config.get("weight_decay", 1e-2),
+            # )
+            # print("[OPTIMIZER]: we are using ADAM")
+            actor_optimizer = optim.SGD(
                 actor_module_fsdp.parameters(),
-                lr=optim_config.lr,
-                betas=optim_config.get("betas", (0.9, 0.999)),
-                weight_decay=optim_config.get("weight_decay", 1e-2),
+                lr=5e-3,
+                momentum=0.9,
             )
+            print("[OPTIMIZER]: we are using SGD")
 
             total_steps = optim_config.get("total_training_steps", 0)
             num_warmup_steps = int(optim_config.get("lr_warmup_steps", -1))
@@ -625,7 +632,11 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         # For sync mode, we directly switch to trainer mode here.
         # For async mode, we can't call run_until_complete here, so we will switch to trainer mode in AgentLoopManager.
         if rollout_config.mode == "sync" and self._is_actor:
-            loop = asyncio.get_event_loop()
+            try:
+                loop = asyncio.get_running_loop()     # returns the loop if one already exists
+            except RuntimeError:
+                loop = asyncio.new_event_loop()       # create one if missing
+                asyncio.set_event_loop(loop)          # register it for this thread
             loop.run_until_complete(self.trainer_mode())
 
     async def rollout_mode(self):

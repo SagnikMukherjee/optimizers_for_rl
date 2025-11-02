@@ -54,7 +54,7 @@ if __name__ == "__main__":
             data_source,
         )
 
-    train_dataset = dataset["train"]
+    # train_dataset = dataset["train"]
     test_dataset = dataset["test"]
 
     instruction_following = "Let's think step by step and output the final answer within \\boxed{}."
@@ -79,7 +79,7 @@ if __name__ == "__main__":
 
         return process_fn
 
-    train_dataset = train_dataset.map(function=make_map_fn("train"), with_indices=True)
+    # train_dataset = train_dataset.map(function=make_map_fn("train"), with_indices=True)
     test_dataset = test_dataset.map(function=make_map_fn("test"), with_indices=True)
 
     local_save_dir = args.local_dir
@@ -91,12 +91,12 @@ if __name__ == "__main__":
     local_dir = os.path.expanduser(local_save_dir)
     hdfs_dir = args.hdfs_dir
 
-    train_dataset.to_parquet(os.path.join(local_dir, "train.parquet"))
+    # train_dataset.to_parquet(os.path.join(local_dir, "train.parquet"))
     test_dataset.to_parquet(os.path.join(local_dir, "test.parquet"))
     # Save one example as JSON for reference
-    example = train_dataset[0]
-    with open(os.path.join(local_dir, "train_example.json"), "w") as f:
-        json.dump(example, f, indent=2)
+    # example = train_dataset[0]
+    # with open(os.path.join(local_dir, "train_example.json"), "w") as f:
+    #     json.dump(example, f, indent=2)
     example = test_dataset[0]
     with open(os.path.join(local_dir, "test_example.json"), "w") as f:
         json.dump(example, f, indent=2)

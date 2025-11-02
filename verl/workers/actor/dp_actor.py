@@ -83,6 +83,151 @@ class DataParallelPPOActor(BasePPOActor):
         )
         self.device_name = get_device_name()
 
+        # Hardcoded gradient masking based on sparsity
+        # if actor_optimizer is not None:
+        #     self._setup_gradient_mask_hooks()
+
+    def _setup_gradient_mask_hooks(self):
+        """Setup gradient mask hooks based on delta sparsity from two reference models.
+        
+        FSDP-aware implementation that correctly handles sharded parameters.
+        """
+        from transformers import AutoModelForCausalLM
+        import torch.distributed as dist
+        
+        # Check FSDP configuration
+        wrapped_param_names = list(self.actor_module.named_parameters())
+        if len(wrapped_param_names) > 0:
+            first_param_name = wrapped_param_names[0][0]
+            if "_flat_param" in first_param_name:
+                if dist.get_rank() == 0:
+                    print("[GRADIENT MASK] ERROR: FSDP is using flattened parameters.")
+                    print("Set: actor_rollout_ref.actor.fsdp_config.use_orig_params=true")
+                return
+        
+        # Hardcoded model paths
+        sft_model_path = "Qwen/Qwen3-1.7B"
+        rl_model_path = "/shared/storage-01/users/sagnikm3/vanilla_grpo/global_step_150/hf"
+        
+        if dist.get_rank() == 0:
+            print(f"[GRADIENT MASK] Loading SFT model from: {sft_model_path}")
+            print(f"[GRADIENT MASK] Loading RL model from: {rl_model_path}")
+        
+        # Load reference models on CPU
+        sft_model = AutoModelForCausalLM.from_pretrained(
+            sft_model_path,
+            torch_dtype=torch.bfloat16,
+            device_map="cpu"
+        )
+        rl_model = AutoModelForCausalLM.from_pretrained(
+            rl_model_path,
+            torch_dtype=torch.bfloat16,
+            device_map="cpu"
+        )
+        
+        sft_state_dict = sft_model.state_dict()
+        rl_state_dict = rl_model.state_dict()
+        
+        # Clean up models early
+        del sft_model, rl_model
+        
+        # Compute binary masks on CPU
+        gradient_masks = {}
+        with torch.no_grad():
+            for name in sft_state_dict.keys():
+                if name in rl_state_dict:
+                    sft_param = sft_state_dict[name].cpu().float()
+                    rl_param = rl_state_dict[name].cpu().float()
+                    
+                    delta = rl_param - sft_param
+                    binary_mask = (delta != 0).to(torch.bfloat16)  # Use bfloat16 to save memory
+                    gradient_masks[name] = binary_mask
+                    
+                    if dist.get_rank() == 0:
+                        sparsity = 1.0 - (binary_mask.sum().item() / binary_mask.numel())
+                        print(f"[GRADIENT MASK] {name}: sparsity={sparsity:.4f}")
+        
+        del sft_state_dict, rl_state_dict
+        
+        # Register hooks with proper FSDP handling
+        def register_hooks_fsdp():
+            registered_count = 0
+            
+            for name, param in self.actor_module.named_parameters():
+                # Strip FSDP prefixes to match mask names
+                clean_name = name.replace("_fsdp_wrapped_module.", "").replace("module.", "")
+                
+                if clean_name not in gradient_masks:
+                    continue
+                
+                full_mask = gradient_masks[clean_name]
+                
+                def create_hook(param_name, mask_cpu):
+                    """Create hook that handles FSDP sharded gradients correctly."""
+                    # Move mask to device once per parameter
+                    mask_device = None
+                    
+                    def hook(grad):
+                        nonlocal mask_device
+                        
+                        if grad is None:
+                            return None
+                        
+                        # Lazy initialization of mask on correct device
+                        if mask_device is None:
+                            mask_device = mask_cpu.to(device=grad.device, dtype=grad.dtype)
+                        
+                        # Handle different gradient types
+                        if isinstance(grad, DTensor):
+                            # DTensor gradients from FSDP2
+                            # The mask should match the local shard
+                            local_tensor = grad.to_local()
+                            # Get the shard slice from the placement
+                            # This is simplified - actual implementation depends on DTensor API
+                            masked_local = local_tensor * mask_device
+                            return masked_local
+                        
+                        elif grad.shape == mask_device.shape:
+                            # Shapes match - direct application
+                            return grad * mask_device
+                        
+                        else:
+                            # FSDP1 sharded gradient - need to slice mask
+                            # FSDP shards along dim 0, so we need to get the correct slice
+                            rank = dist.get_rank()
+                            world_size = dist.get_world_size()
+                            
+                            # Calculate shard boundaries
+                            full_size = mask_device.shape[0]
+                            shard_size = (full_size + world_size - 1) // world_size
+                            start_idx = rank * shard_size
+                            end_idx = min(start_idx + shard_size, full_size)
+                            
+                            # Slice the mask
+                            mask_shard = mask_device[start_idx:end_idx]
+                            
+                            # Handle size mismatch (last rank may have smaller shard)
+                            if mask_shard.shape[0] > grad.shape[0]:
+                                mask_shard = mask_shard[:grad.shape[0]]
+                            elif mask_shard.shape[0] < grad.shape[0]:
+                                # Pad if needed (shouldn't happen normally)
+                                if dist.get_rank() == 0:
+                                    print(f"[GRADIENT MASK] Warning: mask shard smaller than grad for {param_name}")
+                                return grad
+                            
+                            return grad * mask_shard
+                    
+                    return hook
+                
+                param.register_hook(create_hook(name, full_mask))
+                registered_count += 1
+            
+            return registered_count
+        
+        registered_count = register_hooks_fsdp()
+        
+        if dist.get_rank() == 0:
+            print(f"[GRADIENT MASK] Registered {registered_count} gradient hooks")
     def _forward_micro_batch(
         self, micro_batch, temperature, calculate_entropy=False
     ) -> tuple[torch.Tensor, torch.Tensor]:

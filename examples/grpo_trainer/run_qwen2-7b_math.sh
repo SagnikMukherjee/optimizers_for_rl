@@ -1,24 +1,22 @@
 set -x
 
+export CUDA_VISIBLE_DEVICES=4,5,6,7
+train_path=/home/sagnikm3/data/numinamath/train.parquet
+test_path=/home/sagnikm3/data/numinamath/test.parquet
 
-gsm8k_train_path=$HOME/data/gsm8k/train.parquet
-gsm8k_test_path=$HOME/data/gsm8k/test.parquet
-math_train_path=$HOME/data/math/train.parquet
-math_test_path=$HOME/data/math/test.parquet
-
-train_files="['$gsm8k_train_path', '$math_train_path']"
-test_files="['$gsm8k_test_path', '$math_test_path']"
+train_files="['$train_path']"
+test_files="['$test_path']"
 
 python3 -m verl.trainer.main_ppo \
     algorithm.adv_estimator=grpo \
     data.train_files="$train_files" \
     data.val_files="$test_files" \
-    data.train_batch_size=1024 \
+    data.train_batch_size=256 \
     data.max_prompt_length=1024 \
     data.max_response_length=1024 \
     data.filter_overlong_prompts=True \
     data.truncation='error' \
-    actor_rollout_ref.model.path=Qwen/Qwen2-7B-Instruct \
+    actor_rollout_ref.model.path=Qwen/Qwen3-1.7B\
     actor_rollout_ref.actor.optim.lr=1e-6 \
     actor_rollout_ref.model.use_remove_padding=True \
     actor_rollout_ref.actor.ppo_mini_batch_size=256 \
@@ -33,17 +31,18 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=16 \
     actor_rollout_ref.rollout.tensor_model_parallel_size=2 \
     actor_rollout_ref.rollout.name=vllm \
-    actor_rollout_ref.rollout.gpu_memory_utilization=0.6 \
-    actor_rollout_ref.rollout.n=5 \
+    actor_rollout_ref.rollout.gpu_memory_utilization=0.8 \
+    actor_rollout_ref.rollout.n=16 \
     actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=16 \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
     algorithm.use_kl_in_reward=False \
     trainer.critic_warmup=0 \
     trainer.logger='["console","wandb"]' \
-    trainer.project_name='verl_grpo_example_gsm8k_math' \
-    trainer.experiment_name='qwen2_7b_function_rm' \
-    trainer.n_gpus_per_node=8 \
+    trainer.project_name='verl_grpo_subnetwork' \
+    trainer.experiment_name='grpo_sgd_lr5e-3_momentum0.9_qwen3_17b' \
+    trainer.n_gpus_per_node=4 \
     trainer.nnodes=1 \
-    trainer.save_freq=20 \
+    trainer.save_freq=50 \
     trainer.test_freq=5 \
-    trainer.total_epochs=15 $@
+    trainer.default_local_dir=/shared/storage-01/users/sagnikm3/grpo_sgd_lr5e-3_momentum0.9_qwen3_17b \
+    trainer.total_epochs=2 $@
